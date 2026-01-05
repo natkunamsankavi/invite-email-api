@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const nodemailer = require('nodemailer');
+const swaggerUi = require('swagger-ui-express');
 
 const PORT = Number(process.env.PORT || 8787);
 const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
@@ -36,6 +37,137 @@ const transporter = SMTP_USER && SMTP_PASS
 
 const app = express();
 
+const swaggerSpec = {
+  openapi: '3.0.3',
+  info: {
+    title: 'Invite Email API',
+    version: '1.0.0',
+    description: 'API for sending invitation emails.',
+  },
+  servers: [
+    {
+      url: '/',
+      description: 'Current host',
+    },
+  ],
+  components: {
+    securitySchemes: {
+      ApiKeyAuth: {
+        type: 'apiKey',
+        in: 'header',
+        name: 'x-api-key',
+      },
+    },
+    schemas: {
+      InviteRequest: {
+        type: 'object',
+        required: ['email', 'link'],
+        properties: {
+          email: { type: 'string', format: 'email' },
+          link: { type: 'string', format: 'uri' },
+          first_name: { type: 'string' },
+          last_name: { type: 'string' },
+          role: { type: 'string' },
+          organization_name: { type: 'string' },
+          from: { type: 'string' },
+        },
+      },
+      InviteResponse: {
+        type: 'object',
+        properties: {
+          delivered: { type: 'boolean' },
+          messageId: { type: 'string', nullable: true },
+        },
+      },
+      ErrorResponse: {
+        type: 'object',
+        properties: {
+          error: { type: 'string' },
+          delivered: { type: 'boolean' },
+          reason: { type: 'string' },
+        },
+      },
+    },
+  },
+  paths: {
+    '/health': {
+      get: {
+        summary: 'Health check',
+        responses: {
+          200: {
+            description: 'Service is healthy',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { ok: { type: 'boolean' } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/send-invite-email': {
+      post: {
+        summary: 'Send an invitation email',
+        description: 'Requires `x-api-key` header if INVITE_EMAIL_API_KEY is configured.',
+        security: [{ ApiKeyAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/InviteRequest' },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Email delivered',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/InviteResponse' },
+              },
+            },
+          },
+          400: {
+            description: 'Invalid request payload',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          401: {
+            description: 'Unauthorized',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          500: {
+            description: 'SMTP configuration error',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          502: {
+            description: 'SMTP send failure',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 function applyCors(req, res) {
   const origin = req.headers.origin;
   if (allowAnyOrigin) {
@@ -45,7 +177,7 @@ function applyCors(req, res) {
   }
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 }
 
 function extractEmail(value) {
@@ -98,6 +230,12 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '250kb' }));
+
+app.get('/openapi.json', (req, res) => {
+  res.json(swaggerSpec);
+});
+
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 app.get('/health', (req, res) => {
   res.json({ ok: true });
