@@ -1,297 +1,258 @@
-require('dotenv').config();
+require("dotenv").config();
 
-const express = require('express');
-const nodemailer = require('nodemailer');
-const swaggerUi = require('swagger-ui-express');
+const express = require("express");
+const nodemailer = require("nodemailer");
+const swaggerUi = require("swagger-ui-express");
 
-const PORT = Number(process.env.PORT || 8787);
-const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+/* =========================
+   ENV CONFIG
+========================= */
+const PORT = process.env.PORT || 3000;
+
+const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
-const SMTP_SECURE = process.env.SMTP_SECURE
-  ? process.env.SMTP_SECURE.toLowerCase() === 'true'
-  : SMTP_PORT === 465;
-const SMTP_USER = process.env.SMTP_USER || null;
-const SMTP_PASS = process.env.SMTP_PASS || null;
+const SMTP_SECURE =
+  process.env.SMTP_SECURE?.toLowerCase() === "true" || SMTP_PORT === 465;
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
 
-const INVITE_FROM_NAME = process.env.INVITE_FROM_NAME || 'Attendance Platform';
+const INVITE_FROM_NAME =
+  process.env.INVITE_FROM_NAME || "Attendance Platform";
 const INVITE_FROM_EMAIL = process.env.INVITE_FROM_EMAIL || SMTP_USER;
-const INVITE_REPLY_TO = process.env.INVITE_REPLY_TO || null;
+const INVITE_REPLY_TO = process.env.INVITE_REPLY_TO || undefined;
 const INVITE_EMAIL_API_KEY = process.env.INVITE_EMAIL_API_KEY || null;
-const INVITE_ALLOWED_ORIGINS = (process.env.INVITE_ALLOWED_ORIGINS || '*')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
 
-const allowAnyOrigin = INVITE_ALLOWED_ORIGINS.includes('*');
-const transporter = SMTP_USER && SMTP_PASS
-  ? nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: SMTP_PORT,
-      secure: SMTP_SECURE,
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS,
-      },
-    })
-  : null;
+const INVITE_ALLOWED_ORIGINS = (
+  process.env.INVITE_ALLOWED_ORIGINS || "*"
+)
+  .split(",")
+  .map((o) => o.trim());
 
+const allowAnyOrigin = INVITE_ALLOWED_ORIGINS.includes("*");
+
+/* =========================
+   EXPRESS APP
+========================= */
 const app = express();
+app.use(express.json({ limit: "250kb" }));
 
+/* =========================
+   CORS
+========================= */
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (allowAnyOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (origin && INVITE_ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  res.setHeader("Vary", "Origin");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, X-API-Key"
+  );
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
+/* =========================
+   SMTP TRANSPORT
+========================= */
+const transporter =
+  SMTP_USER && SMTP_PASS
+    ? nodemailer.createTransport({
+        host: SMTP_HOST,
+        port: SMTP_PORT,
+        secure: SMTP_SECURE,
+        auth: {
+          user: SMTP_USER,
+          pass: SMTP_PASS,
+        },
+      })
+    : null;
+
+/* =========================
+   HELPERS
+========================= */
+function extractEmail(value) {
+  if (!value || typeof value !== "string") return null;
+  const match = value.match(/<([^>]+)>/);
+  const email = (match ? match[1] : value).trim().toLowerCase();
+  return email.includes("@") ? email : null;
+}
+
+function formatFrom(name, email) {
+  if (!email) return null;
+  return name ? `${name} <${email}>` : email;
+}
+
+function buildInviteEmail({
+  firstName,
+  lastName,
+  role,
+  organizationName,
+  link,
+}) {
+  const recipient =
+    [firstName, lastName].filter(Boolean).join(" ") || "there";
+  const org = organizationName || "Attendance Platform";
+  const roleLabel = role ? role.replace(/_/g, " ") : "member";
+
+  return {
+    subject: `You're invited to ${org}`,
+    text: `Hi ${recipient},
+
+You've been invited to join ${org} as a ${roleLabel}.
+Use the link below to complete your registration:
+
+${link}
+
+If you did not expect this email, you can ignore it.`,
+    html: `
+      <p>Hi ${recipient},</p>
+      <p>
+        You've been invited to join <strong>${org}</strong>
+        as a <strong>${roleLabel}</strong>.
+      </p>
+      <p>
+        <a href="${link}" target="_blank">Click here to finish registration</a>
+      </p>
+      <p>If you did not expect this email, you can ignore it.</p>
+    `,
+  };
+}
+
+/* =========================
+   SWAGGER CONFIG
+========================= */
 const swaggerSpec = {
-  openapi: '3.0.3',
+  openapi: "3.0.3",
   info: {
-    title: 'Invite Email API',
-    version: '1.0.0',
-    description: 'API for sending invitation emails.',
+    title: "Invite Email API",
+    version: "1.0.0",
+    description: "Send invitation emails using SMTP",
   },
-  servers: [
-    {
-      url: '/',
-      description: 'Current host',
-    },
-  ],
+  servers: [{ url: "/" }],
   components: {
     securitySchemes: {
       ApiKeyAuth: {
-        type: 'apiKey',
-        in: 'header',
-        name: 'x-api-key',
-      },
-    },
-    schemas: {
-      InviteRequest: {
-        type: 'object',
-        required: ['email', 'link'],
-        properties: {
-          email: { type: 'string', format: 'email' },
-          link: { type: 'string', format: 'uri' },
-          first_name: { type: 'string' },
-          last_name: { type: 'string' },
-          role: { type: 'string' },
-          organization_name: { type: 'string' },
-          from: { type: 'string' },
-        },
-      },
-      InviteResponse: {
-        type: 'object',
-        properties: {
-          delivered: { type: 'boolean' },
-          messageId: { type: 'string', nullable: true },
-        },
-      },
-      ErrorResponse: {
-        type: 'object',
-        properties: {
-          error: { type: 'string' },
-          delivered: { type: 'boolean' },
-          reason: { type: 'string' },
-        },
+        type: "apiKey",
+        in: "header",
+        name: "x-api-key",
       },
     },
   },
   paths: {
-    '/health': {
+    "/health": {
       get: {
-        summary: 'Health check',
+        summary: "Health check",
         responses: {
           200: {
-            description: 'Service is healthy',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { ok: { type: 'boolean' } },
-                },
-              },
-            },
+            description: "OK",
           },
         },
       },
     },
-    '/send-invite-email': {
+    "/send-invite-email": {
       post: {
-        summary: 'Send an invitation email',
-        description: 'Requires `x-api-key` header if INVITE_EMAIL_API_KEY is configured.',
+        summary: "Send invite email",
         security: [{ ApiKeyAuth: [] }],
         requestBody: {
           required: true,
           content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/InviteRequest' },
+            "application/json": {
+              example: {
+                email: "user@gmail.com",
+                link: "https://example.com/register",
+                first_name: "John",
+                last_name: "Doe",
+                role: "Student",
+                organization_name: "My School",
+              },
             },
           },
         },
         responses: {
-          200: {
-            description: 'Email delivered',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/InviteResponse' },
-              },
-            },
-          },
-          400: {
-            description: 'Invalid request payload',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
-          401: {
-            description: 'Unauthorized',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
-          500: {
-            description: 'SMTP configuration error',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
-          502: {
-            description: 'SMTP send failure',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
+          200: { description: "Email sent" },
+          400: { description: "Invalid request" },
+          401: { description: "Unauthorized" },
+          500: { description: "SMTP error" },
         },
       },
     },
   },
 };
 
-function applyCors(req, res) {
-  const origin = req.headers.origin;
-  if (allowAnyOrigin) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-  } else if (origin && INVITE_ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-}
-
-function extractEmail(value) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const match = trimmed.match(/<([^>]+)>/);
-  const email = (match ? match[1] : trimmed).toLowerCase();
-  return email.includes('@') ? email : null;
-}
-
-function formatFrom(name, email) {
-  if (!email) return null;
-  if (name) return `${name} <${email}>`;
-  return email;
-}
-
-function buildInviteBodies({ firstName, lastName, role, organizationName, link }) {
-  const recipientName = [firstName, lastName].filter(Boolean).join(' ').trim() || 'there';
-  const subjectOrg = (organizationName && organizationName.trim()) || 'Attendance Platform';
-  const roleLabel = role ? String(role).replace(/_/g, ' ') : 'member';
-  const subject = `You're invited to ${subjectOrg}`;
-
-  const textBody = [
-    `Hi ${recipientName},`,
-    '',
-    `You've been invited to join ${subjectOrg} as a ${roleLabel}.`,
-    'Use the link below to set up your username and password:',
-    link,
-    '',
-    'If you were not expecting this email, you can ignore it.',
-  ].join('\n');
-
-  const htmlBody = `
-    <p>Hi ${recipientName},</p>
-    <p>You've been invited to join <strong>${subjectOrg}</strong> as a <strong>${roleLabel}</strong>.</p>
-    <p><a href="${link}" target="_blank" rel="noopener noreferrer">Click here to finish registration</a>.</p>
-    <p>If you were not expecting this email, you can ignore it.</p>
-  `;
-
-  return { subject, textBody, htmlBody };
-}
-
-app.use((req, res, next) => {
-  applyCors(req, res);
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-  return next();
-});
-
-app.use(express.json({ limit: '250kb' }));
-
-app.get('/openapi.json', (req, res) => {
-  res.json(swaggerSpec);
-});
-
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-
-app.get('/health', (req, res) => {
+/* =========================
+   ROUTES
+========================= */
+app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/send-invite-email', async (req, res) => {
+app.get("/openapi.json", (req, res) => {
+  res.json(swaggerSpec);
+});
+
+app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+app.post("/send-invite-email", async (req, res) => {
   if (INVITE_EMAIL_API_KEY) {
-    const providedKey = req.get('x-api-key');
-    if (!providedKey || providedKey !== INVITE_EMAIL_API_KEY) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    if (req.get("x-api-key") !== INVITE_EMAIL_API_KEY) {
+      return res.status(401).json({ error: "Unauthorized" });
     }
   }
 
-  const payload = req.body || {};
-  const email = extractEmail(payload.email);
-  const link = typeof payload.link === 'string' ? payload.link.trim() : '';
+  const email = extractEmail(req.body.email);
+  const link = req.body.link;
 
   if (!email || !link) {
-    return res.status(400).json({ error: 'Email and registration link are required.' });
+    return res
+      .status(400)
+      .json({ error: "Email and link are required" });
   }
 
-  if (!transporter || !SMTP_USER || !SMTP_PASS) {
-    return res.status(500).json({ error: 'SMTP credentials are not configured.' });
+  if (!transporter) {
+    return res
+      .status(500)
+      .json({ error: "SMTP not configured" });
   }
 
-  if (!INVITE_FROM_EMAIL) {
-    return res.status(500).json({ error: 'INVITE_FROM_EMAIL is not configured.' });
-  }
-
-  const fromAddress = formatFrom(INVITE_FROM_NAME, INVITE_FROM_EMAIL);
-  const replyToAddress = INVITE_REPLY_TO || extractEmail(payload.from) || undefined;
-  const { subject, textBody, htmlBody } = buildInviteBodies({
-    firstName: payload.first_name,
-    lastName: payload.last_name,
-    role: payload.role,
-    organizationName: payload.organization_name,
+  const mail = buildInviteEmail({
+    firstName: req.body.first_name,
+    lastName: req.body.last_name,
+    role: req.body.role,
+    organizationName: req.body.organization_name,
     link,
   });
 
   try {
     const info = await transporter.sendMail({
-      from: fromAddress,
+      from: formatFrom(INVITE_FROM_NAME, INVITE_FROM_EMAIL),
       to: email,
-      subject,
-      text: textBody,
-      html: htmlBody,
-      replyTo: replyToAddress || undefined,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+      replyTo: INVITE_REPLY_TO,
     });
 
-    return res.json({ delivered: true, messageId: info.messageId || null });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unable to send invitation email.';
-    return res.status(502).json({ delivered: false, reason: message });
+    res.json({ delivered: true, messageId: info.messageId });
+  } catch (err) {
+    res
+      .status(502)
+      .json({ delivered: false, error: err.message });
   }
 });
 
+/* =========================
+   START SERVER
+========================= */
 app.listen(PORT, () => {
-  console.log(`Invite email API listening on port ${PORT}`);
+  console.log(`Invite Email API running on port ${PORT}`);
 });
